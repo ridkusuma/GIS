@@ -1,0 +1,671 @@
+import contextlib
+import math
+import re
+import tkinter as tk
+import traceback
+
+import geopandas as gpd
+import pandas as pd
+from ttkwidgets.autocomplete import AutocompleteCombobox
+
+# Load file
+gdf_icp: gpd.GeoDataFrame = gpd.read_file("output/icp_with_impedance.shp").set_index(
+    "Alias",
+)
+gdf_sub: gpd.GeoDataFrame = gpd.read_file("output/substation.shp")
+df_dg = pd.read_excel("data/dg_list.xlsx").set_index("ICP")
+df_database = pd.read_excel("data/database.xlsx").set_index("ICP")
+
+_df_database = df_database.copy(deep=True)
+
+# Create the main window
+root = tk.Tk()
+root.title("DG Automation V1.0 (By: R. Kusuma)")
+
+# Create a canvas to allow scrolling
+canvas = tk.Canvas(root, height=1050, width=600)
+canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+# Add a vertical scrollbar to the canvas
+scrollbar = tk.Scrollbar(root, orient=tk.VERTICAL, command=canvas.yview)
+scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+# Configure the canvas to use the scrollbar
+canvas.configure(yscrollcommand=scrollbar.set)
+canvas.bind("<Configure>", lambda _: canvas.configure(scrollregion=canvas.bbox("all")))
+
+# Create a frame to hold the labels and combobox, placed inside the canvas
+frame = tk.Frame(canvas)
+canvas.create_window((0, 0), window=frame, anchor="nw")
+
+text_font = ("consolas", 12)
+
+
+def create_label_and_autocompletecombobox(
+    frame: tk.Frame,
+    text_font: tuple[str, int],
+    label_text: str,
+    combobox_values: list[str],
+    row_num: int,
+) -> tuple[tk.Label, AutocompleteCombobox]:
+    label = tk.Label(frame, text=label_text, anchor=tk.W, font=text_font)
+    label.grid(row=row_num, column=0, sticky=tk.W)
+    combobox = AutocompleteCombobox(
+        frame,
+        completevalues=combobox_values,
+        font=text_font,
+    )
+    combobox.grid(row=row_num, column=1)
+    return (label, combobox)
+
+
+def create_label_and_value_label(
+    frame: tk.Frame,
+    text_font: tuple[str, int],
+    label_text: str,
+    row_num: int,
+) -> tuple[tk.Label, tk.Label]:
+    label = tk.Label(frame, text=label_text, anchor=tk.W, font=text_font)
+    label.grid(row=row_num, column=0, sticky=tk.W)
+    value = tk.Label(frame, text="", anchor=tk.W, font=text_font)
+    value.grid(row=row_num, column=1, sticky=tk.W)
+    return (label, value)
+
+
+def create_label_and_float_entry(
+    frame: tk.Frame,
+    text_font: tuple[str, int],
+    label_text: str,
+    row_num: int,
+) -> tuple[tk.Label, tk.Entry]:
+    label = tk.Label(frame, text=label_text, anchor=tk.W, font=text_font)
+    label.grid(row=row_num, column=0, sticky=tk.W)
+
+    def check_float(val: str) -> bool:
+        if val != "":
+            try:
+                float(val)
+            except ValueError:
+                return False
+            else:
+                return True
+        return True
+
+    reg_val = frame.register(check_float)
+    value = tk.Entry(
+        frame,
+        font=text_font,
+        validate="all",
+        validatecommand=(reg_val, "%P"),
+    )
+    value.grid(row=row_num, column=1, sticky=tk.W)
+    return (label, value)
+
+
+def create_label_and_string_entry(
+    frame: tk.Frame,
+    text_font: tuple[str, int],
+    label_text: str,
+    row_num: int,
+) -> tuple[tk.Label, tk.Entry]:
+    label = tk.Label(frame, text=label_text, anchor=tk.W, font=text_font)
+    label.grid(row=row_num, column=0, sticky=tk.W)
+    value = tk.Entry(frame, font=text_font)
+    value.grid(row=row_num, column=1, sticky=tk.W)
+    return (label, value)
+
+
+# Create label
+icp_label, icp_combobox = create_label_and_autocompletecombobox(
+    *(frame, text_font, "ICP", gdf_icp.index.tolist(), 0),
+)
+impedance_label, impedance_value_label = create_label_and_value_label(
+    *(frame, text_font, "Impedance", 1),
+)
+subs_no_label, subs_no_value_label = create_label_and_value_label(
+    *(frame, text_font, "Subs No", 2),
+)
+subs_name_label, subs_name_value_label = create_label_and_value_label(
+    *(frame, text_font, "Subs Name", 3),
+)
+capacity_label, capacity_value_label = create_label_and_value_label(
+    *(frame, text_font, "Capacity", 4),
+)
+circuit_id_label, circuit_id_value_label = create_label_and_value_label(
+    *(frame, text_font, "Circuit ID", 5),
+)
+switch_no_label, switch_no_value_label = create_label_and_value_label(
+    *(frame, text_font, "Switch No", 6),
+)
+feeder_label, feeder_value_label = create_label_and_value_label(
+    *(frame, text_font, "Feeder", 7),
+)
+no_of_icp_in_circuit_label, no_of_icp_in_circuit_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "No of ICP in circuit", 8),
+    )
+)
+no_of_icp_in_subs_label, no_of_icp_in_subs_value_label = create_label_and_value_label(
+    *(frame, text_font, "No of ICPs in Subs", 9),
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 10),
+)
+# User input
+dg_prime_mover_label, dg_prime_mover_value_label = (
+    create_label_and_autocompletecombobox(
+        *(
+            frame,
+            text_font,
+            "DG prime mover (solar, hydro, diesel)",
+            ["Solar", "Hydro", "Diesel"],
+            11,
+        ),
+    )
+)
+dg_installed_capacity_label, dg_installed_capacity_value_label = (
+    create_label_and_float_entry(
+        *(frame, text_font, "DG Installed Capacity (kVA)", 12),
+    )
+)
+inv_gen_makes_model_label, inv_gen_makes_model_value_label = (
+    create_label_and_string_entry(
+        *(frame, text_font, "Inverter / generator makes and models", 13),
+    )
+)
+inv_gen_capacity_label, inv_gen_capacity_value_label = create_label_and_float_entry(
+    *(frame, text_font, "Inverter / generator capacity (kVA)", 14),
+)
+batt_stor_makes_model_label, batt_stor_makes_model_value_label = (
+    create_label_and_string_entry(
+        *(frame, text_font, "Battery / Storage makes and model", 15),
+    )
+)
+batt_stor_power_label, batt_stor_power_value_label = create_label_and_float_entry(
+    *(frame, text_font, "Battery / Storage power (kW)", 16),
+)
+batt_stor_capacity_label, batt_stor_capacity_value_label = create_label_and_float_entry(
+    *(frame, text_font, "Battery / Storage capacity (kWh)", 17),
+)
+batt_stor_output_type_label, batt_stor_output_type_value_label = (
+    create_label_and_autocompletecombobox(
+        *(
+            frame,
+            text_font,
+            "Battery / Storage output type (AC / DC)",
+            ["AC", "DC"],
+            18,
+        ),
+    )
+)
+applied_export_label, applied_export_value_label = create_label_and_float_entry(
+    *(frame, text_font, "Applied export (kVA)", 19),
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 20),
+)
+installed_cap_per_subs_label, installed_cap_per_subs_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Installed Capacity per Subs (kVA)", 21),
+    )
+)
+installed_cap_per_circuit_label, installed_cap_per_circuit_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Installed Capacity per circuit (kVA)", 22),
+    )
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 23),
+)
+# Calculation 1
+no_of_icp_in_circuit_2_label, no_of_icp_in_circuit_2_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "No of ICPs in circuit", 24),
+    )
+)
+installed_dg_cap_per_circuit_label, installed_dg_cap_per_circuit_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Installed DG Capacity per circuit (kVA)", 25),
+    )
+)
+lv_feeder_base_load_label, lv_feeder_base_load_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "LV Feeder Day Time Base Load (kVA)", 26),
+    )
+)
+spare_lv_feeder_cap_1_label, spare_lv_feeder_cap_1_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Spare LV feeder Capacity (kVA)", 27),
+    )
+)
+cap_avail_label, cap_avail_value_label = create_label_and_value_label(
+    *(frame, text_font, "Capacity available (Yes / No)", 28),
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 29),
+)
+# Calculation 2
+impedance_2_label, impedance_2_value_label = create_label_and_value_label(
+    *(frame, text_font, "Impedance", 30),
+)
+installed_dg_cap_per_circuit_2_label, installed_dg_cap_per_circuit_2_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Installed DG Capacity per circuit (kVA)", 31),
+    )
+)
+worst_case_hosting_cap_est_label, worst_case_hosting_cap_est_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Worst Case Hosting Capacity Estimate (kVA)", 32),
+    )
+)
+spare_lv_feeder_cap_2_label, spare_lv_feeder_cap_2_value_label = (
+    create_label_and_value_label(
+        *(frame, text_font, "Spare LV feeder Capacity (kVA)", 33),
+    )
+)
+cap_avail_2_label, cap_avail_2_value_label = create_label_and_value_label(
+    *(frame, text_font, "Capacity available (Yes / No)", 34),
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 35),
+)
+# User Input
+special_approval_label, special_approval_value_label = (
+    create_label_and_autocompletecombobox(
+        *(frame, text_font, "Special Approval (Yes/No)", ["Yes", "No"], 36),
+    )
+)
+export_limit_label, export_limit_value_label = create_label_and_float_entry(
+    *(frame, text_font, "Export limit (kVA)", 37),
+)
+
+# blank
+create_label_and_value_label(
+    *(frame, text_font, "", 38),
+)
+
+# Save Button
+update_button = tk.Button(frame, text="Update", font=text_font)
+update_button.grid(row=39, column=1, sticky=tk.W)
+save_button = tk.Button(frame, text="Save", font=text_font)
+save_button.grid(row=39, column=0, sticky=tk.W)
+
+# Status
+status_label = tk.Label(root, text="", font=text_font, fg="#FF0000", anchor=tk.W)
+status_label.pack()
+selected_id = None
+
+
+# Define a function to update the impedance and hosting labels when the selection changes
+def update_values() -> None:
+    try:
+        global selected_id
+        status_label.config(text="")
+
+        selected_id = icp_combobox.get()
+        if selected_id not in gdf_icp.index:
+            selected_id = None
+            status_label.config(text="selected_id not found")
+            return
+
+        # Get the matching row(s)
+        s_icp = gdf_icp.loc[selected_id]
+        s_sub = gdf_sub[gdf_sub["SubNo"] == s_icp["SubNo"]].iloc[0]
+
+        # Fill database
+        _df_database.loc[selected_id, "Impedance"] = s_icp["Impedance"]
+        _df_database.loc[selected_id, "Subs No"] = s_icp["SubNo"]
+        _df_database.loc[selected_id, "Subs Name"] = s_icp["SubName"]
+        _df_database.loc[selected_id, "Capacity"] = s_sub["TAPower"]
+        _df_database.loc[selected_id, "Circuit ID"] = s_icp["Circuit_ID"]
+        try:
+            _df_database.loc[selected_id, "Switch No"] = int(
+                re.sub("[^0-9]", "", s_icp["Circuit_ID"].split("/")[1]),
+            )
+        except Exception:
+            _df_database.loc[selected_id, "Switch No"] = -1
+        _df_database.loc[selected_id, "Feeder"] = s_sub["CircuitID2"]
+
+        _df_database.loc[selected_id, "No of ICP in circuit"] = len(
+            gdf_icp.loc[gdf_icp["Circuit_ID"] == s_icp["Circuit_ID"]],
+        )
+        _df_database.loc[selected_id, "No of ICPs in Subs"] = len(
+            gdf_icp.loc[gdf_icp["SubNo"] == s_icp["SubNo"]],
+        )
+        dg_total_per_subs = 0
+        for _id, _ in gdf_icp.loc[gdf_icp["SubNo"] == s_icp["SubNo"]].iterrows():
+            if _id in df_dg.index:
+                cap = df_dg.loc[_id]["DG Capacity (kVA)"]
+                if isinstance(cap, pd.Series):
+                    cap = cap.max()
+                dg_total_per_subs += cap
+
+        dg_total_per_circuit = 0
+        for _id, _ in gdf_icp.loc[
+            gdf_icp["Circuit_ID"] == s_icp["Circuit_ID"]
+        ].iterrows():
+            if _id in df_dg.index:
+                cap = df_dg.loc[_id]["DG Capacity (kVA)"]
+                if isinstance(cap, pd.Series):
+                    cap = cap.max()
+                dg_total_per_circuit += cap
+
+        _df_database.loc[selected_id, "Installed Capacity per Subs (kVA)"] = (
+            dg_total_per_subs
+        )
+        _df_database.loc[selected_id, "Installed Capacity per circuit (kVA)"] = (
+            dg_total_per_circuit
+        )
+
+        _df_database.loc[selected_id, "LV Feeder Day Time Base Load (kVA)"] = (
+            _df_database.loc[selected_id]["No of ICP in circuit"] * 0.2
+        )
+
+        # Fill the value label
+        impedance_value_label.config(text=_df_database.loc[selected_id, "Impedance"])
+        subs_no_value_label.config(text=_df_database.loc[selected_id, "Subs No"])
+        subs_name_value_label.config(text=_df_database.loc[selected_id, "Subs Name"])
+        capacity_value_label.config(text=_df_database.loc[selected_id, "Capacity"])
+        circuit_id_value_label.config(text=_df_database.loc[selected_id, "Circuit ID"])
+        switch_no_value_label.config(text=_df_database.loc[selected_id, "Switch No"])
+        feeder_value_label.config(text=_df_database.loc[selected_id, "Feeder"])
+        no_of_icp_in_circuit_value_label.config(
+            text=_df_database.loc[selected_id, "No of ICP in circuit"],
+        )
+        no_of_icp_in_subs_value_label.config(
+            text=_df_database.loc[selected_id, "No of ICPs in Subs"],
+        )
+
+        installed_cap_per_subs_value_label.config(
+            text=_df_database.loc[selected_id, "Installed Capacity per Subs (kVA)"],
+        )
+
+        installed_cap_per_circuit_value_label.config(
+            text=_df_database.loc[selected_id, "Installed Capacity per circuit (kVA)"],
+        )
+
+        # Remove all input value label
+        dg_prime_mover_value_label.delete(0, tk.END)
+        dg_installed_capacity_value_label.delete(0, tk.END)
+        inv_gen_makes_model_value_label.delete(0, tk.END)
+        inv_gen_capacity_value_label.delete(0, tk.END)
+        batt_stor_makes_model_value_label.delete(0, tk.END)
+        batt_stor_power_value_label.delete(0, tk.END)
+        batt_stor_capacity_value_label.delete(0, tk.END)
+        batt_stor_output_type_value_label.delete(0, tk.END)
+        applied_export_value_label.delete(0, tk.END)
+        special_approval_value_label.delete(0, tk.END)
+        export_limit_value_label.delete(0, tk.END)
+
+        no_of_icp_in_circuit_2_value_label.config(text="")
+        installed_dg_cap_per_circuit_value_label.config(text="")
+        lv_feeder_base_load_value_label.config(text="")
+        spare_lv_feeder_cap_1_value_label.config(text="")
+        cap_avail_value_label.config(text="")
+        impedance_2_value_label.config(text="")
+        installed_dg_cap_per_circuit_2_value_label.config(text="")
+        worst_case_hosting_cap_est_value_label.config(text="")
+        spare_lv_feeder_cap_2_value_label.config(text="")
+        cap_avail_2_value_label.config(text="")
+
+    except Exception:
+        status_label.config(text=traceback.format_exc())
+
+
+def update_callback() -> None:
+    try:
+        status_label.config(text="")
+        if selected_id is None:
+            status_label.config(text="selected_id not found")
+            return
+
+        # Get the matching row(s)
+        s_icp = gdf_icp.loc[selected_id]
+
+        # Create database index
+        if selected_id not in _df_database.index:
+            _df_database.loc[selected_id] = None
+
+        # Calculation 1
+        _df_database.loc[selected_id, "Spare LV feeder Capacity (kVA)"] = (
+            _df_database.loc[selected_id]["LV Feeder Day Time Base Load (kVA)"]
+            - _df_database.loc[selected_id]["Installed Capacity per circuit (kVA)"]
+        )
+
+        _df_database.loc[selected_id, "Applied export (kVA)"] = float(
+            applied_export_value_label.get(),
+        )
+
+        _df_database.loc[selected_id, "Capacity available (Yes / No)"] = (
+            "Yes"
+            if (
+                _df_database.loc[selected_id]["Spare LV feeder Capacity (kVA)"]
+                - _df_database.loc[selected_id]["Applied export (kVA)"]
+            )
+            > 0
+            else "No"
+        )
+
+        # Calculation 2
+        if _df_database.loc[selected_id]["Capacity available (Yes / No)"] == "No":
+            _df_database.loc[
+                selected_id,
+                "Worst Case Hosting Capacity Estimate (kVA)",
+            ] = math.sqrt(3) * (424 * (424 - 415) / s_icp["Impedance"] * 0.001)
+            _df_database.loc[selected_id, "Spare LV feeder Capacity (kVA).1"] = (
+                _df_database.loc[selected_id][
+                    "Worst Case Hosting Capacity Estimate (kVA)"
+                ]
+                - _df_database.loc[selected_id]["Installed Capacity per circuit (kVA)"]
+            )
+            _df_database.loc[selected_id, "Capacity available (Yes / No).1"] = (
+                "Yes"
+                if (
+                    _df_database.loc[selected_id]["Spare LV feeder Capacity (kVA).1"]
+                    - _df_database.loc[selected_id]["Applied export (kVA)"]
+                )
+                > 0
+                and (
+                    _df_database.loc[selected_id]["Spare LV feeder Capacity (kVA).1"]
+                    < _df_database.loc[selected_id, "Capacity"]
+                )
+                else "No"
+            )
+        else:
+            _df_database.loc[
+                selected_id,
+                "Worst Case Hosting Capacity Estimate (kVA)",
+            ] = None
+            _df_database.loc[selected_id, "Spare LV feeder Capacity (kVA).1"] = None
+            _df_database.loc[selected_id, "Capacity available (Yes / No).1"] = None
+
+        if _df_database.loc[selected_id]["Capacity available (Yes / No).1"] == "Yes":
+            pass
+
+        # Fill value label
+        no_of_icp_in_circuit_2_value_label.config(
+            text=_df_database.loc[selected_id, "No of ICP in circuit"],
+        )
+        installed_dg_cap_per_circuit_value_label.config(
+            text=_df_database.loc[selected_id, "Installed Capacity per circuit (kVA)"],
+        )
+        lv_feeder_base_load_value_label.config(
+            text=_df_database.loc[selected_id, "LV Feeder Day Time Base Load (kVA)"],
+        )
+        spare_lv_feeder_cap_1_value_label.config(
+            text=_df_database.loc[selected_id, "Spare LV feeder Capacity (kVA)"],
+        )
+        cap_avail_value_label.config(
+            text=_df_database.loc[selected_id, "Capacity available (Yes / No)"],
+        )
+
+        impedance_2_value_label.config(text=_df_database.loc[selected_id, "Impedance"])
+        installed_dg_cap_per_circuit_2_value_label.config(
+            text=_df_database.loc[selected_id, "Installed Capacity per circuit (kVA)"],
+        )
+        worst_case_hosting_cap_est_value_label.config(
+            text=_df_database.loc[
+                selected_id,
+                "Worst Case Hosting Capacity Estimate (kVA)",
+            ],
+        )
+        spare_lv_feeder_cap_2_value_label.config(
+            text=_df_database.loc[selected_id, "Spare LV feeder Capacity (kVA).1"],
+        )
+        cap_avail_2_value_label.config(
+            text=_df_database.loc[selected_id, "Capacity available (Yes / No).1"],
+        )
+
+    except Exception:
+        status_label.config(text=traceback.format_exc())
+
+
+def save_button_callback() -> None:
+    try:
+        status_label.config(text="")
+        if selected_id is not None:
+            # Update calculation
+            if applied_export_value_label.get() != "":
+                update_callback()
+            else:
+                status_label.config(text="Applied Export missing")
+                return
+
+            # Get user input
+            _df_database.loc[selected_id, "DG prime mover (solar, hydro, diesel)"] = (
+                dg_prime_mover_value_label.get()
+            )
+            _df_database.loc[selected_id, "DG Installed Capacity (kVA)"] = float(
+                dg_installed_capacity_value_label.get(),
+            )
+            _df_database.loc[selected_id, "Inverter / generator makes and models"] = (
+                inv_gen_makes_model_value_label.get()
+            )
+            _df_database.loc[selected_id, "Inverter / generator capacity (kVA)"] = (
+                float(
+                    inv_gen_capacity_value_label.get(),
+                )
+            )
+            _df_database.loc[selected_id, "Battery / Storage makes and model"] = (
+                batt_stor_makes_model_value_label.get()
+            )
+            _df_database.loc[selected_id, "Battery / Storage power (kW)"] = float(
+                batt_stor_power_value_label.get(),
+            )
+            _df_database.loc[selected_id, "Battery / Storage capacity (kWh)"] = float(
+                batt_stor_capacity_value_label.get(),
+            )
+            _df_database.loc[selected_id, "Battery / Storage output type (AC / DC)"] = (
+                batt_stor_output_type_value_label.get()
+            )
+
+            _df_database.loc[selected_id, "Special Approval (Yes/No)"] = (
+                special_approval_value_label.get()
+            )
+            with contextlib.suppress(ValueError):
+                _df_database.loc[selected_id, "Export limit (kVA)"] = float(
+                    export_limit_value_label.get(),
+                )
+
+            # Save database
+            df_database.loc[selected_id] = _df_database.loc[selected_id]
+            df_database.to_excel("data/database.xlsx")
+
+            # Create dg_list index
+            if selected_id not in df_dg.index:
+                df_dg.loc[selected_id] = None
+
+            # Update dg_list
+            df_dg.loc[selected_id, "Substation Name"] = _df_database.loc[
+                selected_id,
+                "Subs Name",
+            ]
+            df_dg.loc[selected_id, "TX Size"] = _df_database.loc[
+                selected_id,
+                "Capacity",
+            ]
+            df_dg.loc[selected_id, "Distribution Sub (S#)"] = _df_database.loc[
+                selected_id,
+                "Subs No",
+            ]
+            df_dg.loc[selected_id, "LV Feeder Switch Number "] = _df_database.loc[
+                selected_id,
+                "Switch No",
+            ]
+            df_dg.loc[selected_id, "DG Type"] = _df_database.loc[
+                selected_id,
+                "DG prime mover (solar, hydro, diesel)",
+            ]
+            df_dg.loc[selected_id, "DG Capacity (kVA)"] = (
+                (
+                    _df_database.loc[selected_id, "Export limit (kVA)"]
+                    if _df_database.loc[selected_id, "Special Approval (Yes/No)"]
+                    == "Yes"
+                    else 0
+                )
+                if _df_database.loc[selected_id]["Capacity available (Yes / No).1"]
+                == "No"
+                and _df_database.loc[selected_id]["Capacity available (Yes / No)"]
+                == "No"
+                else _df_database.loc[selected_id, "Applied export (kVA)"]
+            )
+            df_dg.loc[selected_id, "DG Inverter Type/Make"] = _df_database.loc[
+                selected_id,
+                "Inverter / generator makes and models",
+            ]
+            df_dg.loc[selected_id, "Battery Storage Output (kW)"] = _df_database.loc[
+                selected_id,
+                "Battery / Storage power (kW)",
+            ]
+            df_dg.loc[selected_id, "Battery Storage Capacity"] = _df_database.loc[
+                selected_id,
+                "Battery / Storage capacity (kWh)",
+            ]
+            df_dg.loc[selected_id, "Battery Storage Inverter Type"] = _df_database.loc[
+                selected_id,
+                "Battery / Storage makes and model",
+            ]
+            df_dg.loc[selected_id, "Approx Number of ICP's on Single LV feeder "] = (
+                _df_database.loc[
+                    selected_id,
+                    "No of ICP in circuit",
+                ]
+            )
+
+            # Save dg_list
+            col_list = df_dg.reset_index().columns.tolist()
+            col_list.insert(2, col_list.pop(col_list.index("ICP")))
+            df_dg.reset_index().reindex(columns=col_list).to_excel(
+                "data/dg_list.xlsx",
+                index=False,
+                freeze_panes=(1, 3),
+            )
+
+            status_label.config(text="Saved")
+            return
+        status_label.config(text="selected id None")
+
+    except Exception:
+        status_label.config(text=traceback.format_exc())
+
+
+# Bind the update function to the combobox selection change event
+icp_combobox.bind("<<ComboboxSelected>>", lambda _: update_values())
+icp_combobox.bind("<Return>", lambda _: update_values())
+
+# Bind save button
+save_button.config(command=save_button_callback)
+update_button.config(command=update_callback)
+
+# Start the main loop
+root.mainloop()
